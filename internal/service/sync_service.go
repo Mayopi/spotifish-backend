@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,26 +19,32 @@ import (
 
 // audioMimeTypes defines the audio MIME types we recognize.
 var audioMimeTypes = map[string]bool{
-	"audio/mpeg":  true,
-	"audio/mp3":   true,
-	"audio/flac":  true,
+	"audio/mpeg":   true,
+	"audio/mp3":    true,
+	"audio/flac":   true,
 	"audio/x-flac": true,
-	"audio/ogg":   true,
-	"audio/wav":   true,
-	"audio/x-wav": true,
-	"audio/aac":   true,
-	"audio/mp4":   true,
-	"audio/x-m4a": true,
+	"audio/ogg":    true,
+	"audio/wav":    true,
+	"audio/x-wav":  true,
+	"audio/aac":    true,
+	"audio/mp4":    true,
+	"audio/x-m4a":  true,
 }
 
 // SyncService handles library sync operations.
 type SyncService struct {
-	syncRepo     *repository.SyncRepository
-	songRepo     *repository.SongRepository
-	driveRepo    *repository.DriveRepository
-	driveSvc     *DriveService
-	metaSvc      *MetadataService
-	artSvc       *ArtStorageService
+	syncRepo  *repository.SyncRepository
+	songRepo  *repository.SongRepository
+	driveRepo *repository.DriveRepository
+	driveSvc  *DriveService
+	metaSvc   *MetadataService
+	artSvc    *ArtStorageService
+
+	// pauseRequests is a per-job pause flag set by PauseSync. The hot loop in
+	// RunSync polls this between files and exits cleanly when set, persisting
+	// the job in 'paused' state. Using sync.Map keeps this lock-free for the
+	// frequent read in the file loop.
+	pauseRequests sync.Map // map[string]bool, keyed by job.ID
 }
 
 // NewSyncService creates a new SyncService.
@@ -59,35 +66,76 @@ func NewSyncService(
 	}
 }
 
-// EnqueueSync creates a sync job if none is running for the user.
+// EnqueueSync creates a sync job if none is running for the user. If a paused
+// job exists, it is resumed by clearing the pause flag and re-running.
 func (s *SyncService) EnqueueSync(ctx context.Context, userID string) (*model.SyncJob, error) {
-	// Check for existing running/queued job
+	// Check for existing running/queued/paused job
 	existing, err := s.syncRepo.GetRunning(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("check running sync: %w", err)
 	}
-	if existing != nil {
-		return existing, nil // idempotent
+	if existing != nil && (existing.State == model.SyncStateQueued || existing.State == model.SyncStateRunning) {
+		return existing, nil // already in flight
 	}
 
-	job := &model.SyncJob{
-		UserID: userID,
-		State:  model.SyncStateQueued,
-	}
-	job, err = s.syncRepo.Create(ctx, job)
-	if err != nil {
-		return nil, fmt.Errorf("create sync job: %w", err)
+	var job *model.SyncJob
+	if existing != nil && existing.State == model.SyncStatePaused {
+		// Resume an existing paused job in place so processed_count is preserved.
+		job = existing
+		job.State = model.SyncStateQueued
+		job.PausedAt = nil
+		if err := s.syncRepo.Update(ctx, job); err != nil {
+			return nil, fmt.Errorf("resume paused sync: %w", err)
+		}
+		s.pauseRequests.Delete(job.ID)
+		log.Info().Str("jobId", job.ID).Str("userId", userID).Msg("resuming paused sync")
+	} else {
+		job = &model.SyncJob{
+			UserID: userID,
+			State:  model.SyncStateQueued,
+		}
+		job, err = s.syncRepo.Create(ctx, job)
+		if err != nil {
+			return nil, fmt.Errorf("create sync job: %w", err)
+		}
 	}
 
 	// Run sync in background
-	go func() {
+	go func(jobID string) {
 		bgCtx := context.Background()
-		if err := s.RunSync(bgCtx, userID, job.ID); err != nil {
-			log.Error().Err(err).Str("jobId", job.ID).Str("userId", userID).Msg("sync failed")
+		if err := s.RunSync(bgCtx, userID, jobID); err != nil {
+			log.Error().Err(err).Str("jobId", jobID).Str("userId", userID).Msg("sync failed")
 		}
-	}()
+	}(job.ID)
 
 	return job, nil
+}
+
+// PauseSync requests that the running sync job for the given user pause at the
+// next file boundary. Returns the latest job state. No-op if no job is running.
+func (s *SyncService) PauseSync(ctx context.Context, userID string) (*model.SyncJob, error) {
+	job, err := s.syncRepo.GetRunning(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get running sync: %w", err)
+	}
+	if job == nil {
+		return nil, fmt.Errorf("no running sync to pause")
+	}
+	if job.State == model.SyncStatePaused {
+		return job, nil
+	}
+	if job.State != model.SyncStateRunning && job.State != model.SyncStateQueued {
+		return job, nil
+	}
+	s.pauseRequests.Store(job.ID, true)
+	log.Info().Str("jobId", job.ID).Str("userId", userID).Msg("pause requested")
+	return job, nil
+}
+
+// ResumeSync resumes a paused sync. Behaves like EnqueueSync when the latest
+// job is paused — kept as a separate method for explicit API ergonomics.
+func (s *SyncService) ResumeSync(ctx context.Context, userID string) (*model.SyncJob, error) {
+	return s.EnqueueSync(ctx, userID)
 }
 
 // GetStatus returns the latest sync job status.
@@ -103,12 +151,22 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 		return s.failJob(ctx, jobID, "no drive folder connected")
 	}
 
+	// Load existing job so we keep processed_count when resuming a paused job.
+	existingJob, err := s.syncRepo.GetByID(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load sync job: %w", err)
+	}
+	if existingJob == nil {
+		return fmt.Errorf("sync job %s not found", jobID)
+	}
+
 	// Update job to running
 	now := time.Now()
-	job := &model.SyncJob{
-		ID:        jobID,
-		State:     model.SyncStateRunning,
-		StartedAt: &now,
+	job := existingJob
+	job.State = model.SyncStateRunning
+	job.PausedAt = nil
+	if job.StartedAt == nil {
+		job.StartedAt = &now
 	}
 	if err := s.syncRepo.Update(ctx, job); err != nil {
 		return fmt.Errorf("update job to running: %w", err)
@@ -141,11 +199,29 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 		return s.failJob(ctx, jobID, fmt.Sprintf("get existing ids error: %v", err))
 	}
 
-	// Track which file IDs we've seen to detect deletions
+	// Track which file IDs we've seen to detect deletions. Resume-friendly: we
+	// keep processed from the previous run so unchanged-skip ticks contribute
+	// correctly to the visible counter.
 	seenFileIDs := make(map[string]bool)
-	processed := 0
+	processed := job.ProcessedCount
 
 	for _, file := range driveFiles {
+		// Cooperative pause check at the top of each iteration. We persist the
+		// job in 'paused' state and exit cleanly so the user can resume later
+		// from exactly the same processed_count.
+		if _, paused := s.pauseRequests.Load(jobID); paused {
+			pausedAt := time.Now()
+			job.State = model.SyncStatePaused
+			job.PausedAt = &pausedAt
+			job.ProcessedCount = processed
+			if err := s.syncRepo.Update(ctx, job); err != nil {
+				log.Error().Err(err).Str("jobId", jobID).Msg("failed to persist pause")
+			}
+			s.pauseRequests.Delete(jobID)
+			log.Info().Str("jobId", jobID).Int("processed", processed).Int("total", totalCount).Msg("sync paused")
+			return nil
+		}
+
 		seenFileIDs[file.Id] = true
 
 		// Check if file needs update
@@ -155,7 +231,10 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 		if existing != nil && existing.DriveModifiedAt != nil &&
 			!modifiedTime.After(*existing.DriveModifiedAt) {
 			processed++
-			continue // unchanged
+			// Persist progress for unchanged files too so the client sees the
+			// counter advance even when nothing is being downloaded.
+			_ = s.syncRepo.UpdateProgress(ctx, jobID, model.SyncStateRunning, processed)
+			continue
 		}
 
 		// Download file for metadata extraction
@@ -163,6 +242,7 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 		if err != nil {
 			log.Warn().Err(err).Str("fileId", file.Id).Msg("failed to download file for metadata")
 			processed++
+			_ = s.syncRepo.UpdateProgress(ctx, jobID, model.SyncStateRunning, processed)
 			continue
 		}
 
@@ -173,6 +253,7 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 		if err != nil {
 			log.Warn().Err(err).Str("fileId", file.Id).Msg("failed to read file")
 			processed++
+			_ = s.syncRepo.UpdateProgress(ctx, jobID, model.SyncStateRunning, processed)
 			continue
 		}
 
@@ -207,26 +288,27 @@ func (s *SyncService) RunSync(ctx context.Context, userID, jobID string) error {
 
 		// Upsert song
 		song := &model.Song{
-			UserID:           userID,
-			Source:           "drive",
-			SourceFileID:     file.Id,
-			Title:            meta.Title,
-			Artist:           meta.Artist,
-			Album:            meta.Album,
-			DurationMs:       meta.Duration,
-			MimeType:         file.MimeType,
+			UserID:            userID,
+			Source:            "drive",
+			SourceFileID:      file.Id,
+			Title:             meta.Title,
+			Artist:            meta.Artist,
+			Album:             meta.Album,
+			DurationMs:        meta.Duration,
+			MimeType:          file.MimeType,
 			AlbumArtObjectKey: artKey,
-			DriveModifiedAt:  &modifiedTime,
+			DriveModifiedAt:   &modifiedTime,
 		}
 		if _, err := s.songRepo.Upsert(ctx, song); err != nil {
 			log.Warn().Err(err).Str("fileId", file.Id).Msg("failed to upsert song")
 		}
 
 		processed++
-		// Update progress periodically
-		if processed%10 == 0 {
-			job.ProcessedCount = processed
-			_ = s.syncRepo.Update(ctx, job)
+		// Persist per-song progress so the Android client's poll-and-refresh
+		// loop sees fresh tracks land in the library within ~1 poll interval.
+		// UpdateProgress writes only state + processed_count for cheap updates.
+		if err := s.syncRepo.UpdateProgress(ctx, jobID, model.SyncStateRunning, processed); err != nil {
+			log.Warn().Err(err).Str("jobId", jobID).Msg("failed to persist progress")
 		}
 	}
 
