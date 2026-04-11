@@ -377,10 +377,13 @@ func (s *SyncService) walkFolder(srv *drive.Service, folderID string, files *[]*
 // failJob marks a sync job as failed.
 func (s *SyncService) failJob(ctx context.Context, jobID, errMsg string) error {
 	now := time.Now()
+	// Take the address of a local copy so the pointer remains valid for the
+	// SQL parameter binding inside Update.
+	msg := errMsg
 	job := &model.SyncJob{
 		ID:         jobID,
 		State:      model.SyncStateFailed,
-		LastError:  errMsg,
+		LastError:  &msg,
 		FinishedAt: &now,
 	}
 	return s.syncRepo.Update(ctx, job)
