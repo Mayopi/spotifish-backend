@@ -86,9 +86,18 @@ func (r *SongRepository) GetBySourceFileID(ctx context.Context, userID, source, 
 }
 
 // List returns a paginated list of songs for a user.
+//
+// IMPORTANT: the returned slice is always non-nil (use `make([]*model.Song, 0)`),
+// so the JSON serialization in the handler always emits `[]` rather than `null`.
+// The Android client's kotlinx-serialization parser throws on a JSON `null` for
+// a non-nullable List field, which previously caused incremental sync polling to
+// silently swallow every fetch while the DB was still empty.
 func (r *SongRepository) List(ctx context.Context, userID, cursor string, limit int, sortBy, sortDir string) ([]*model.Song, string, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
 	}
 
 	// Validate sort params
@@ -104,7 +113,15 @@ func (r *SongRepository) List(ctx context.Context, userID, cursor string, limit 
 		sortDir = "asc"
 	}
 
-	// Build query with cursor-based pagination using ID as tiebreaker
+	// Build query with cursor-based pagination using ID as tiebreaker.
+	//
+	// NOTE: the cursor here is purely the last row's UUID, which is only stable
+	// when ordering by id. With other sort columns (lower(title), etc.) the
+	// `id > cursor` filter will silently skip and duplicate rows. The Android
+	// client always requests `limit=1000` and Spotifish libraries are typically
+	// well under that, so the cursor branch is rarely exercised in practice;
+	// when we eventually need real cursors with non-id sorts, switch to a
+	// composite (sort_value, id) cursor encoded as base64.
 	query := fmt.Sprintf(
 		`SELECT id, user_id, source, source_file_id, title, artist, album, duration_ms, mime_type,
 		        album_art_object_key, drive_modified_at, added_at
@@ -112,7 +129,6 @@ func (r *SongRepository) List(ctx context.Context, userID, cursor string, limit 
 
 	args := []interface{}{userID}
 	if cursor != "" {
-		// Cursor is the last song's ID
 		query += ` AND id > $2`
 		args = append(args, cursor)
 	}
@@ -125,7 +141,7 @@ func (r *SongRepository) List(ctx context.Context, userID, cursor string, limit 
 	}
 	defer rows.Close()
 
-	var songs []*model.Song
+	songs := make([]*model.Song, 0, limit)
 	for rows.Next() {
 		var s model.Song
 		if err := rows.Scan(&s.ID, &s.UserID, &s.Source, &s.SourceFileID, &s.Title, &s.Artist,
@@ -146,6 +162,11 @@ func (r *SongRepository) List(ctx context.Context, userID, cursor string, limit 
 
 	return songs, nextCursor, nil
 }
+
+// maxListLimit caps the page size for /v1/songs. 1000 is comfortably above any
+// realistic Spotifish user's Drive library, so the Android client can pull the
+// full song list in a single round-trip without paginating during sync polling.
+const maxListLimit = 1000
 
 // Search performs a full-text search across title, artist, and album.
 func (r *SongRepository) Search(ctx context.Context, userID, query string, limit int) ([]*model.Song, error) {
@@ -175,7 +196,7 @@ func (r *SongRepository) Search(ctx context.Context, userID, query string, limit
 	}
 	defer rows.Close()
 
-	var songs []*model.Song
+	songs := make([]*model.Song, 0, limit)
 	for rows.Next() {
 		var s model.Song
 		if err := rows.Scan(&s.ID, &s.UserID, &s.Source, &s.SourceFileID, &s.Title, &s.Artist,
