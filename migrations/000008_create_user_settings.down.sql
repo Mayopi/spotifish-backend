@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS playback_events CASCADE;
+DROP TABLE IF EXISTS user_settings CASCADE;

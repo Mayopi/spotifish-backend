@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS drive_folders CASCADE;
+DROP TABLE IF EXISTS drive_credentials CASCADE;

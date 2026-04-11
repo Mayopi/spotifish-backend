@@ -1,0 +1,43 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://spotifish:spotifish@postgres:5432/spotifish?sslmode=disable
+      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY:-change-me-to-a-random-64-char-string}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:8080/v1/drive/callback}
+      - DRIVE_ENCRYPTION_KEY=${DRIVE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      - ALBUM_ART_PATH=/var/lib/spotifish/art
+      - SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS:-6}
+      - RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN:-200}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - art_data:/var/lib/spotifish/art
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: spotifish
+      POSTGRES_PASSWORD: spotifish
+      POSTGRES_DB: spotifish
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spotifish"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  art_data:

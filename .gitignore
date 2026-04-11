@@ -1,0 +1,34 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/spotifish-backend
+/bin/
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Album art storage (dev)
+/art/
+
+# OS
+.DS_Store
+Thumbs.db
