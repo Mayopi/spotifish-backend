@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"github.com/spotifish/backend/internal/middleware"
 	"github.com/spotifish/backend/internal/model"
 	"github.com/spotifish/backend/internal/service"
@@ -40,6 +41,7 @@ func (h *DriveHandler) Connect(c *gin.Context) {
 	}
 
 	if err := h.driveSvc.Connect(c.Request.Context(), userID, req.AuthCode); err != nil {
+		log.Error().Err(err).Str("userId", userID).Msg("drive connect failed")
 		c.JSON(http.StatusBadRequest, model.ErrorResponse{
 			Error: model.APIError{Code: "drive_connect_failed", Message: err.Error()},
 		})
@@ -56,6 +58,7 @@ func (h *DriveHandler) ListFolders(c *gin.Context) {
 
 	folders, err := h.driveSvc.ListFolders(c.Request.Context(), userID, parentID)
 	if err != nil {
+		log.Error().Err(err).Str("userId", userID).Str("parentId", parentID).Msg("drive list folders failed")
 		c.JSON(http.StatusBadRequest, model.ErrorResponse{
 			Error: model.APIError{Code: "drive_unauthorized", Message: err.Error()},
 		})
