@@ -145,6 +145,7 @@ Content-Type: application/json
 | `GET` | `/v1/me` | Current user profile |
 | `GET` | `/v1/me/settings` | User settings |
 | `PATCH` | `/v1/me/settings` | Update settings |
+| `GET` | `/v1/me/stats` | User library + playback statistics |
 
 ### Google Drive
 
@@ -208,6 +209,7 @@ Content-Type: application/json
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/playback/events` | Record playback event |
+| `GET` | `/v1/playback/recent?limit=20` | List recently played songs |
 
 ```json
 { "songId": "...", "eventType": "started|completed|skipped", "positionMs": 0 }

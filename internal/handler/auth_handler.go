@@ -118,6 +118,7 @@ func (h *AuthHandler) RegisterRoutes(rg *gin.RouterGroup) {
 type UserHandler struct {
 	userRepo    userGetter
 	settingsSvc *service.SettingsService
+	statsSvc    *service.StatsService
 }
 
 type userGetter interface {
@@ -125,8 +126,8 @@ type userGetter interface {
 }
 
 // NewUserHandler creates a new UserHandler.
-func NewUserHandler(userRepo userGetter, settingsSvc *service.SettingsService) *UserHandler {
-	return &UserHandler{userRepo: userRepo, settingsSvc: settingsSvc}
+func NewUserHandler(userRepo userGetter, settingsSvc *service.SettingsService, statsSvc *service.StatsService) *UserHandler {
+	return &UserHandler{userRepo: userRepo, settingsSvc: settingsSvc, statsSvc: statsSvc}
 }
 
 // GetMe handles GET /v1/me.
@@ -176,6 +177,19 @@ func (h *UserHandler) UpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, settings)
 }
 
+// GetStats handles GET /v1/me/stats.
+func (h *UserHandler) GetStats(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	stats, err := h.statsSvc.GetUserStats(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{
+			Error: model.APIError{Code: "stats_error", Message: err.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
 // RegisterRoutes registers user routes on the given router group.
 func (h *UserHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/me", h.GetMe)
@@ -183,5 +197,6 @@ func (h *UserHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	{
 		me.GET("/settings", h.GetSettings)
 		me.PATCH("/settings", h.UpdateSettings)
+		me.GET("/stats", h.GetStats)
 	}
 }

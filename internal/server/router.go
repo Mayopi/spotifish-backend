@@ -32,6 +32,7 @@ type Dependencies struct {
 	LibrarySvc  *service.LibraryService
 	PlaylistSvc *service.PlaylistService
 	FavoriteSvc *service.FavoriteService
+	StatsSvc    *service.StatsService
 	MetaSvc     *service.MetadataService
 	ArtSvc      *service.ArtStorageService
 
@@ -59,9 +60,10 @@ func InitDependencies(pool *pgxpool.Pool, cfg *config.Config) *Dependencies {
 	metaSvc := service.NewMetadataService()
 	artSvc := service.NewArtStorageService(cfg.AlbumArtPath)
 	syncSvc := service.NewSyncService(syncRepo, songRepo, driveRepo, driveSvc, metaSvc, artSvc)
-	librarySvc := service.NewLibraryService(songRepo, playbackRepo)
+	librarySvc := service.NewLibraryService(songRepo, playbackRepo, favoriteRepo)
 	playlistSvc := service.NewPlaylistService(playlistRepo, songRepo)
 	favoriteSvc := service.NewFavoriteService(favoriteRepo, songRepo)
+	statsSvc := service.NewStatsService(songRepo, favoriteRepo, playlistRepo, playbackRepo)
 
 	// Worker
 	syncWorker := worker.NewSyncWorker(syncSvc, driveRepo)
@@ -72,7 +74,7 @@ func InitDependencies(pool *pgxpool.Pool, cfg *config.Config) *Dependencies {
 		PlaylistRepo: playlistRepo, FavoriteRepo: favoriteRepo, PlaybackRepo: playbackRepo,
 		AuthSvc: authSvc, SettingsSvc: settingsSvc, DriveSvc: driveSvc,
 		SyncSvc: syncSvc, LibrarySvc: librarySvc, PlaylistSvc: playlistSvc,
-		FavoriteSvc: favoriteSvc, MetaSvc: metaSvc, ArtSvc: artSvc,
+		FavoriteSvc: favoriteSvc, StatsSvc: statsSvc, MetaSvc: metaSvc, ArtSvc: artSvc,
 		SyncWorker: syncWorker,
 	}
 }
@@ -106,7 +108,7 @@ func SetupRouter(pool *pgxpool.Pool, deps *Dependencies, cfg *config.Config) *gi
 	authed.Use(middleware.Auth(deps.AuthSvc))
 	{
 		// User profile & settings
-		userHandler := handler.NewUserHandler(deps.UserRepo, deps.SettingsSvc)
+		userHandler := handler.NewUserHandler(deps.UserRepo, deps.SettingsSvc, deps.StatsSvc)
 		userHandler.RegisterRoutes(authed)
 
 		// Drive

@@ -14,11 +14,20 @@ import (
 type LibraryService struct {
 	songRepo     *repository.SongRepository
 	playbackRepo *repository.PlaybackEventRepository
+	favoriteRepo *repository.FavoriteRepository
 }
 
 // NewLibraryService creates a new LibraryService.
-func NewLibraryService(songRepo *repository.SongRepository, playbackRepo *repository.PlaybackEventRepository) *LibraryService {
-	return &LibraryService{songRepo: songRepo, playbackRepo: playbackRepo}
+func NewLibraryService(
+	songRepo *repository.SongRepository,
+	playbackRepo *repository.PlaybackEventRepository,
+	favoriteRepo *repository.FavoriteRepository,
+) *LibraryService {
+	return &LibraryService{
+		songRepo:     songRepo,
+		playbackRepo: playbackRepo,
+		favoriteRepo: favoriteRepo,
+	}
 }
 
 // ListSongs returns a paginated list of songs.
@@ -89,6 +98,16 @@ func (s *LibraryService) GetHomeSections(ctx context.Context, userID string) (*m
 			Title: "Recently Played",
 			Type:  "songs",
 			Items: recentlyPlayed,
+		})
+	}
+
+	// Favorites
+	favoriteSongs, err := s.favoriteRepo.ListRecent(ctx, userID, 20)
+	if err == nil && len(favoriteSongs) > 0 {
+		sections = append(sections, model.HomeSection{
+			Title: "Favorite Songs",
+			Type:  "songs",
+			Items: favoriteSongs,
 		})
 	}
 

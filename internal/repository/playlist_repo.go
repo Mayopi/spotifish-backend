@@ -174,3 +174,13 @@ func (r *PlaylistRepository) GetSongs(ctx context.Context, playlistID string) ([
 	defer rows.Close()
 	return scanSongs(rows)
 }
+
+// CountByUserID returns the total playlist count for a user.
+func (r *PlaylistRepository) CountByUserID(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM playlists WHERE user_id = $1`, userID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count playlists: %w", err)
+	}
+	return count, nil
+}

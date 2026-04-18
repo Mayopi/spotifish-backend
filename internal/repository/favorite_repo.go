@@ -61,6 +61,24 @@ func (r *FavoriteRepository) List(ctx context.Context, userID string) ([]*model.
 	return scanSongs(rows)
 }
 
+// ListRecent returns the most recently favorited songs for a user.
+func (r *FavoriteRepository) ListRecent(ctx context.Context, userID string, limit int) ([]*model.Song, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT s.id, s.user_id, s.source, s.source_file_id, s.title, s.artist, s.album,
+		        s.duration_ms, s.mime_type, s.album_art_object_key, s.drive_modified_at, s.added_at
+		 FROM songs s
+		 JOIN favorites f ON f.song_id = s.id
+		 WHERE f.user_id = $1
+		 ORDER BY f.created_at DESC
+		 LIMIT $2`, userID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recent favorites: %w", err)
+	}
+	defer rows.Close()
+	return scanSongs(rows)
+}
+
 // IsFavorite checks if a song is in the user's favorites.
 func (r *FavoriteRepository) IsFavorite(ctx context.Context, userID, songID string) (bool, error) {
 	var exists bool
@@ -72,4 +90,14 @@ func (r *FavoriteRepository) IsFavorite(ctx context.Context, userID, songID stri
 		return false, fmt.Errorf("check favorite: %w", err)
 	}
 	return exists, nil
+}
+
+// CountByUserID returns the total favorites count for a user.
+func (r *FavoriteRepository) CountByUserID(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM favorites WHERE user_id = $1`, userID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count favorites: %w", err)
+	}
+	return count, nil
 }

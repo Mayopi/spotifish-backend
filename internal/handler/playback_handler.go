@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/spotifish/backend/internal/middleware"
@@ -64,10 +65,39 @@ func (h *PlaybackHandler) RecordEvent(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// ListRecentlyPlayed handles GET /v1/playback/recent.
+func (h *PlaybackHandler) ListRecentlyPlayed(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit <= 0 {
+		c.JSON(http.StatusBadRequest, model.ErrorResponse{
+			Error: model.APIError{Code: "invalid_request", Message: "limit must be a positive integer"},
+		})
+		return
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	songs, err := h.playbackRepo.GetRecentlyPlayed(c.Request.Context(), userID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{
+			Error: model.APIError{Code: "list_recent_played_error", Message: err.Error()},
+		})
+		return
+	}
+	if songs == nil {
+		songs = make([]*model.Song, 0)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"songs": songs})
+}
+
 // RegisterRoutes registers playback routes on the given router group.
 func (h *PlaybackHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	playback := rg.Group("/playback")
 	{
 		playback.POST("/events", h.RecordEvent)
+		playback.GET("/recent", h.ListRecentlyPlayed)
 	}
 }
